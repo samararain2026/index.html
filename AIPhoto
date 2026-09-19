@@ -1,0 +1,342 @@
+HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Photo Edit Analyzer & Coaching Tool</title>
+  <script src="https://cdn.jsdelivr.net/npm/exif-js"></script>
+  <style>
+    :root {
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --accent: #38bdf8;
+      --accent-hover: #0284c7;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --border: #334155;
+      --warning: #f59e0b;
+      --success: #10b981;
+    }
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 2rem;
+      display: flex;
+      justify-content: center;
+    }
+    .container {
+      max-width: 1100px;
+      width: 100%;
+      display: flex;
+      flex-direction: column;
+      gap: 2rem;
+    }
+    header {
+      text-align: center;
+    }
+    header h1 {
+      margin: 0 0 0.5rem 0;
+      color: var(--accent);
+    }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 12px;
+      padding: 3rem;
+      text-align: center;
+      background: var(--card-bg);
+      cursor: pointer;
+      transition: border-color 0.2s, background-color 0.2s;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent);
+      background: #24334a;
+    }
+    .dropzone input { display: none; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1.5rem;
+    }
+    @media (max-width: 768px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+    }
+    .card h2 {
+      margin-top: 0;
+      font-size: 1.25rem;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 0.5rem;
+      color: var(--accent);
+    }
+    img.preview {
+      max-width: 100%;
+      max-height: 400px;
+      object-fit: contain;
+      border-radius: 8px;
+      display: block;
+      margin: 0 auto;
+    }
+    canvas.histogram {
+      width: 100%;
+      height: 120px;
+      background: #090d16;
+      border-radius: 6px;
+      margin-top: 1rem;
+    }
+    ul { padding-left: 1.2rem; margin: 0; }
+    li { margin-bottom: 0.5rem; }
+    .tag {
+      display: inline-block;
+      padding: 0.25rem 0.6rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-right: 0.5rem;
+      margin-bottom: 0.5rem;
+      background: #334155;
+    }
+    .tag.detected { background: #0369a1; color: #e0f2fe; }
+    .tag.warning { background: #78350f; color: #fef3c7; }
+    .tag.info { background: #065f46; color: #d1fae5; }
+    .metric-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+      font-size: 0.95rem;
+    }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <header>
+    <h1>Photo Edit & Quality Analyzer</h1>
+    <p style="color: var(--text-muted)">Upload a photo to reveal software traces, detected tonal edits, color shifts, and tips to improve your shot.</p>
+  </header>
+
+  <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+    <p><strong>Drag & Drop your photo here</strong> or click to browse</p>
+    <p style="color: var(--text-muted); font-size: 0.85rem;">Supports JPG, PNG, WebP (RAW files converted to JPG show EXIF data)</p>
+    <input type="file" id="fileInput" accept="image/*" onchange="handleFile(this.files[0])" />
+  </div>
+
+  <div id="results" class="grid" style="display:none;">
+    <div class="card">
+      <h2>Image Preview & Histogram</h2>
+      <img id="imgPreview" class="preview" alt="Preview" />
+      <canvas id="histogramCanvas" class="histogram"></canvas>
+      <div id="exifMetadata" style="margin-top: 1rem; font-size: 0.9rem;"></div>
+    </div>
+
+    <div class="card">
+      <h2>Detected Edits & Parameters</h2>
+      <div id="detectedEditsTags"></div>
+      <div id="metricsList" style="margin-top: 1rem;"></div>
+    </div>
+
+    <div class="card" style="grid-column: 1 / -1;">
+      <h2>Photography & Editing Improvement Pointers</h2>
+      <ul id="pointersList"></ul>
+    </div>
+  </div>
+</div>
+
+<script>
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('dragover'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('dragover'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropzone.classList.remove('dragover');
+    if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+  });
+
+  function handleFile(file) {
+    if (!file || !file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = function(e) {
+      const img = new Image();
+      img.onload = function() {
+        document.getElementById('results').style.display = 'grid';
+        document.getElementById('imgPreview').src = img.src;
+        
+        // Analyze image EXIF & Canvas metrics
+        analyzeExif(file);
+        analyzeCanvasMetrics(img);
+      };
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  function analyzeExif(file) {
+    const exifDiv = document.getElementById('exifMetadata');
+    exifDiv.innerHTML = '<p><em>Reading EXIF Metadata...</em></p>';
+
+    EXIF.getData(file, function() {
+      const camera = EXIF.getTag(this, 'Make') ? `${EXIF.getTag(this, 'Make')} ${EXIF.getTag(this, 'Model')}` : 'Unknown Camera';
+      const software = EXIF.getTag(this, 'Software') || EXIF.getTag(this, 'ProcessingSoftware') || 'None detected in EXIF';
+      const iso = EXIF.getTag(this, 'ISOSpeedRatings') || 'N/A';
+      const fNumber = EXIF.getTag(this, 'FNumber') ? `f/${EXIF.getTag(this, 'FNumber')}` : 'N/A';
+      const exposure = EXIF.getTag(this, 'ExposureTime') ? `1/${Math.round(1/EXIF.getTag(this, 'ExposureTime'))}s` : 'N/A';
+
+      exifDiv.innerHTML = `
+        <div class="metric-row"><span>Camera Model:</span> <strong>${camera}</strong></div>
+        <div class="metric-row"><span>Editing Software:</span> <strong>${software}</strong></div>
+        <div class="metric-row"><span>Aperture / Exposure:</span> <strong>${fNumber} | ${exposure}</strong></div>
+        <div class="metric-row"><span>ISO:</span> <strong>${iso}</strong></div>
+      `;
+    });
+  }
+
+  function analyzeCanvasMetrics(img) {
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Scale down for speed
+    const maxDim = 500;
+    let w = img.width, h = img.height;
+    if (w > maxDim || h > maxDim) {
+      if (w > h) { h = Math.round((h * maxDim) / w); w = maxDim; }
+      else { w = Math.round((w * maxDim) / h); h = maxDim; }
+    }
+
+    canvas.width = w;
+    canvas.height = h;
+    ctx.drawImage(img, 0, 0, w, h);
+
+    const imgData = ctx.getImageData(0, 0, w, h);
+    const data = imgData.data;
+
+    let rSum = 0, gSum = 0, bSum = 0;
+    let totalSat = 0, totalLum = 0;
+    let rHist = new Array(256).fill(0);
+    let gHist = new Array(256).fill(0);
+    let bHist = new Array(256).fill(0);
+    let lumHist = new Array(256).fill(0);
+
+    let crushedShadows = 0, blownHighlights = 0;
+    const totalPixels = data.length / 4;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i], g = data[i+1], b = data[i+2];
+      rSum += r; gSum += g; bSum += b;
+
+      rHist[r]++; gHist[g]++; bHist[b]++;
+
+      // Luminance (Rec. 709)
+      const lum = Math.round(0.2126 * r + 0.7152 * g + 0.0722 * b);
+      lumHist[lum]++;
+      totalLum += lum;
+
+      if (lum < 10) crushedShadows++;
+      if (lum > 245) blownHighlights++;
+
+      // Saturation calculation
+      const max = Math.max(r, g, b), min = Math.min(r, g, b);
+      const sat = max === 0 ? 0 : (max - min) / max;
+      totalSat += sat;
+    }
+
+    const avgR = rSum / totalPixels;
+    const avgG = gSum / totalPixels;
+    const avgB = bSum / totalPixels;
+    const avgSat = totalSat / totalPixels;
+    const avgLum = totalLum / totalPixels;
+
+    drawHistogram(lumHist, rHist, gHist, bHist);
+
+    // Heuristics for edits & quality
+    const editTags = [];
+    const pointers = [];
+    const metricsDiv = document.getElementById('metricsList');
+
+    // 1. Color Balance / White Balance shift
+    let colorTempShift = 'Balanced';
+    if (avgR > avgB + 25) {
+      colorTempShift = 'Warm / Orange Tint';
+      editTags.push('Warm Color Grade / Sunset Filter');
+    } else if (avgB > avgR + 25) {
+      colorTempShift = 'Cool / Blue Tint';
+      editTags.push('Cool Tone Grade');
+    }
+
+    // 2. Saturation evaluation
+    if (avgSat > 0.45) {
+      editTags.push('High Saturation / Vibrance Boost');
+      pointers.push('<strong>Color Saturation:</strong> Colors appear heavily saturated. Try dialing back overall saturation by 10-15% and adjusting specific HSL channels instead to keep natural textures intact.');
+    } else if (avgSat < 0.12) {
+      editTags.push('Desaturated / Moody Grade');
+    }
+
+    // 3. Highlight / Shadow Clipping
+    const crushedPercent = ((crushedShadows / totalPixels) * 100).toFixed(1);
+    const blownPercent = ((blownHighlights / totalPixels) * 100).toFixed(1);
+
+    if (crushedPercent > 8) {
+      editTags.push('High Contrast / Shadow Recovery Needed');
+      pointers.push(`<strong>Shadow Detail:</strong> About ${crushedPercent}% of pixels are pure black. Consider lifting shadow sliders or using a subtle Tone Curve to recover shadow details.`);
+    }
+    if (blownPercent > 8) {
+      editTags.push('Blown Highlights');
+      pointers.push(`<strong>Exposure Control:</strong> About ${blownPercent}% of pixels are clipped white. Lower your highlights or exposure in post, or underexpose slightly in-camera to protect sky and reflection details.`);
+    }
+
+    if (crushedPercent <= 8 && blownPercent <= 8) {
+      pointers.push('<strong>Tonal Balance:</strong> Good distribution of light and shadow. The dynamic range is well managed without severe clipping.');
+    }
+
+    if (avgSat >= 0.12 && avgSat <= 0.40) {
+      pointers.push('<strong>Natural Colors:</strong> Color vibrancy looks natural and realistic. This preserves skin tones and subtle details.');
+    }
+
+    // Render Tags
+    const tagsDiv = document.getElementById('detectedEditsTags');
+    if (editTags.length === 0) editTags.push('Minimal or Natural Processing');
+    tagsDiv.innerHTML = editTags.map(t => `<span class="tag detected">${t}</span>`).join('');
+
+    // Render Metrics
+    metricsDiv.innerHTML = `
+      <div class="metric-row"><span>Average Brightness:</span> <strong>${Math.round(avgLum)} / 255</strong></div>
+      <div class="metric-row"><span>Average Saturation:</span> <strong>${Math.round(avgSat * 100)}%</strong></div>
+      <div class="metric-row"><span>Color Balance:</span> <strong>${colorTempShift}</strong></div>
+      <div class="metric-row"><span>Shadow Clipping (&lt;10 lum):</span> <strong>${crushedPercent}%</strong></div>
+      <div class="metric-row"><span>Highlight Clipping (&gt;245 lum):</span> <strong>${blownPercent}%</strong></div>
+    `;
+
+    // Render Pointers
+    const pointersUl = document.getElementById('pointersList');
+    pointersUl.innerHTML = pointers.map(p => `<li>${p}</li>`).join('');
+  }
+
+  function drawHistogram(lum, r, g, b) {
+    const canvas = document.getElementById('histogramCanvas');
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const maxCount = Math.max(...lum);
+    const scale = canvas.height / (maxCount || 1);
+
+    ctx.lineWidth = 1;
+    for (let i = 0; i < 256; i++) {
+      const x = (i / 256) * canvas.width;
+      const h = lum[i] * scale;
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.fillRect(x, canvas.height - h, canvas.width / 256, h);
+    }
+  }
+</script>
+</body>
+</html>
